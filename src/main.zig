@@ -4,6 +4,9 @@ const AF = std.os.linux.AF;
 const SOCK = std.os.linux.SOCK;
 const IPRROTO = std.os.linux.IPPROTO;
 const EPOLL = std.os.linux.EPOLL;
+const MSG = std.os.linux.MSG;
+const SOL = std.os.linux.SOL;
+const SO = std.os.linux.SO;
 const errno = std.os.linux.errno;
 const sockaddr = std.os.linux.sockaddr;
 
@@ -15,6 +18,8 @@ const TcpListener = struct {
         if (errno(socket) != .SUCCESS) {
             return error.Socket;
         }
+
+        _ = std.os.linux.setsockopt(@intCast(socket), SOL.SOCKET, SO.REUSEADDR, &.{1}, @sizeOf(std.os.linux.socklen_t));
 
         const addr = sockaddr.in{
             .family = AF.INET,
@@ -69,7 +74,33 @@ pub fn main() !void {
         const n = std.os.linux.epoll_wait(epoll_fd, &events, events.len, 10_000);
 
         for (0..n) |i| {
-            _ = events[i]; // todo: todo
+            const event = events[i];
+
+            std.debug.print("{}: {}\n", .{ event.events & EPOLL.IN != 1, event.events & EPOLL.OUT != 1 });
+
+            if (event.data.fd == server.socket) {
+                const client = try server.accept();
+
+                ev = .{
+                    .events = EPOLL.IN | EPOLL.OUT,
+                    .data = .{ .fd = client },
+                };
+                if (errno(std.os.linux.epoll_ctl(epoll_fd, EPOLL.CTL_ADD, client, &ev)) != .SUCCESS) {
+                    _ = std.os.linux.close(client);
+                }
+            } else if (event.events & EPOLL.IN != -1) {
+                var buf: [4096]u8 = undefined;
+                const read = std.os.linux.recvfrom(event.data.fd, &buf, buf.len, 0, null, null);
+
+                if (errno(read) != .AGAIN) { // .AGAIN also means EWOULDBLOCK
+                    _ = std.os.linux.epoll_ctl(epoll_fd, EPOLL.CTL_DEL, event.data.fd, null); // < linux v2.6.9 requires non-null pointer
+                    _ = std.os.linux.close(event.data.fd); // fixme: we close socket even if socket is still writable.
+                }
+            } else if (event.events & EPOLL.OUT != -1) {
+                const sent = std.os.linux.sendto(event.data.fd, "bye.zig", 7, MSG.NOSIGNAL, null, 0);
+
+                _ = sent; // todo: properly flush
+            }
         }
     }
 }
