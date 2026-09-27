@@ -11,12 +11,12 @@ const errno = std.os.linux.errno;
 const sockaddr = std.os.linux.sockaddr;
 
 const TcpListener = struct {
-    socket: i32,
+    file_descriptor: i32,
 
     pub fn init() !TcpListener {
         const socket = std.os.linux.socket(AF.INET, SOCK.STREAM, IPRROTO.TCP);
         if (errno(socket) != .SUCCESS) {
-            return error.Socket;
+            return error.Socket; // todo: name all error.*'s properly
         }
 
         _ = std.os.linux.setsockopt(@intCast(socket), SOL.SOCKET, SO.REUSEADDR, &.{1}, @sizeOf(std.os.linux.socklen_t));
@@ -35,71 +35,113 @@ const TcpListener = struct {
         }
 
         return .{
-            .socket = @intCast(socket),
+            .file_descriptor = @intCast(socket),
         };
     }
 
     pub fn accept(self: TcpListener) !std.os.linux.fd_t {
-        const connection = std.os.linux.accept4(self.socket, null, null, SOCK.NONBLOCK);
+        while (true) {
+            const socket = std.os.linux.accept4(self.file_descriptor, null, null, SOCK.NONBLOCK);
 
-        if (errno(connection) == .SUCCESS) { // todo: treat enetdown, eproto, etc. as eagain retry & epoll.
-            return @intCast(connection);
+            if (socket != -1 and errno(socket) != .INTR) {
+                return @intCast(socket);
+            }
         }
 
         return -1;
     }
+
+    pub fn recv() void {}
+    pub fn send() void {}
 };
 
-pub fn main() !void {
-    const epoll_fd: std.os.linux.fd_t = block: {
-        const status = std.os.linux.epoll_create();
-        if (errno(status) != .SUCCESS) {
+const Client = struct {
+    file_descriptor: std.os.linux.fd_t,
+
+    query_buf: []u8,
+    query_pos: usize,
+
+    response_buf: []u8,
+    response_pos: usize,
+};
+
+const EventLoop = struct {
+    file_descriptor: std.os.linux.fd_t,
+
+    events: [512]std.os.linux.epoll_event = undefined,
+    // clients: []Client,
+
+    pub fn init() !EventLoop {
+        const epoll_fd = std.os.linux.epoll_create();
+        if (errno(epoll_fd) != .SUCCESS) {
             return error.Create;
         }
 
-        break :block @intCast(status);
-    };
-    defer _ = std.os.linux.close(epoll_fd);
+        return .{
+            .file_descriptor = @intCast(epoll_fd),
+        };
+    }
 
-    var events: [1024]std.os.linux.epoll_event = undefined;
+    pub fn deinit(self: *EventLoop) void {
+        _ = std.os.linux.close(self.file_descriptor);
+    }
+
+    pub fn wait(self: *EventLoop) u32 {
+        const rc = std.os.linux.epoll_wait(self.file_descriptor, &self.events, self.events.len, -1);
+
+        if (errno(rc) == .SUCCESS) {
+            return @intCast(rc);
+        }
+
+        return 0;
+    }
+
+    pub fn add(self: *EventLoop, file_descriptor: std.os.linux.fd_t) !void {
+        var ev: std.os.linux.epoll_event = .{
+            .events = EPOLL.IN,
+            .data = .{ .fd = file_descriptor },
+        };
+
+        if (errno(std.os.linux.epoll_ctl(self.file_descriptor, EPOLL.CTL_ADD, file_descriptor, &ev)) != .SUCCESS) {
+            _ = std.os.linux.close(file_descriptor);
+            return error.Add;
+        }
+    }
+    pub fn dispatch(self: *EventLoop, file_descriptor: std.os.linux.fd_t) void {
+        _ = std.os.linux.epoll_ctl(self.file_descriptor, EPOLL.CTL_DEL, file_descriptor, null); // < linux v2.6.9 requires non-null pointer
+        _ = std.os.linux.close(file_descriptor);
+    }
+};
+
+pub fn main() !void {
+    var event_loop = try EventLoop.init();
+    defer event_loop.deinit();
+
     const server = try TcpListener.init();
-
-    var ev: std.os.linux.epoll_event = .{
-        .events = EPOLL.IN,
-        .data = .{ .fd = server.socket },
-    };
-    _ = std.os.linux.epoll_ctl(epoll_fd, EPOLL.CTL_ADD, server.socket, &ev);
+    try event_loop.add(server.file_descriptor);
 
     while (true) {
-        const n = std.os.linux.epoll_wait(epoll_fd, &events, events.len, 10_000);
+        const n = event_loop.wait();
 
-        for (0..n) |i| {
-            const event = events[i];
-
-            std.debug.print("{}: {}\n", .{ event.events & EPOLL.IN != 1, event.events & EPOLL.OUT != 1 });
-
-            if (event.data.fd == server.socket) {
+        for (event_loop.events[0..n]) |event| {
+            if (event.data.fd == server.file_descriptor) {
                 const client = try server.accept();
+                event_loop.add(client) catch {};
+            } else {
+                if (event.events & EPOLL.IN != -1) {
+                    var buf: [4096]u8 = undefined;
+                    const rc = std.os.linux.recvfrom(event.data.fd, &buf, buf.len, 0, null, null);
 
-                ev = .{
-                    .events = EPOLL.IN | EPOLL.OUT,
-                    .data = .{ .fd = client },
-                };
-                if (errno(std.os.linux.epoll_ctl(epoll_fd, EPOLL.CTL_ADD, client, &ev)) != .SUCCESS) {
-                    _ = std.os.linux.close(client);
+                    if (rc == 0) {
+                        event_loop.dispatch(event.data.fd);
+                    }
                 }
-            } else if (event.events & EPOLL.IN != -1) {
-                var buf: [4096]u8 = undefined;
-                const read = std.os.linux.recvfrom(event.data.fd, &buf, buf.len, 0, null, null);
 
-                if (errno(read) != .AGAIN) { // .AGAIN also means EWOULDBLOCK
-                    _ = std.os.linux.epoll_ctl(epoll_fd, EPOLL.CTL_DEL, event.data.fd, null); // < linux v2.6.9 requires non-null pointer
-                    _ = std.os.linux.close(event.data.fd); // fixme: we close socket even if socket is still writable.
+                if (event.events & EPOLL.OUT != -1) {
+                    const sent = std.os.linux.sendto(event.data.fd, "bye.zig", 7, MSG.NOSIGNAL, null, 0);
+
+                    _ = sent; // todo: properly flush
                 }
-            } else if (event.events & EPOLL.OUT != -1) {
-                const sent = std.os.linux.sendto(event.data.fd, "bye.zig", 7, MSG.NOSIGNAL, null, 0);
-
-                _ = sent; // todo: properly flush
             }
         }
     }
