@@ -2,38 +2,42 @@ const std = @import("std");
 const EPOLL = std.os.linux.EPOLL;
 const MSG = std.os.linux.MSG;
 
+const Client = @import("event_pool.zig").Client;
 const EventLoop = @import("event_pool.zig").EventLoop;
 const TcpListener = @import("event_pool.zig").TcpListener; // refactor: not the best design?
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+
     var event_loop = try EventLoop.init();
     defer event_loop.deinit();
 
     const server = try TcpListener.init();
-    try event_loop.add(server.file_descriptor);
+
+    const _srv: *Client = try .init(server.file_descriptor, gpa);
+    try event_loop.add(_srv); // refactor: ugly + unneceseary allocation of buffers, aka waste of 16KB?
 
     while (true) {
         const n = event_loop.wait();
 
         for (event_loop.events[0..n]) |event| {
-            if (event.data.fd == server.file_descriptor) {
-                const client = try server.accept();
-                event_loop.add(client) catch {};
+            const client: *Client = @ptrFromInt(event.data.ptr);
+
+            if (client.file_descriptor == server.file_descriptor) {
+                const new_client: *Client = try .init(server.accept(), gpa); // todo: .accept can be invalid fd_t
+                try event_loop.add(new_client);
             } else {
                 if (event.events & EPOLL.IN != -1) {
-                    var buf: [4096]u8 = undefined;
-                    const rc = std.os.linux.recvfrom(event.data.fd, &buf, buf.len, 0, null, null);
+                    const bytes = std.os.linux.recvfrom(client.file_descriptor, client.to_read.ptr, client.to_read.len, 0, null, null);
 
-                    if (rc == 0) {
-                        event_loop.dispatch(event.data.fd);
+                    if (bytes == 0) {
+                        event_loop.dispatch(client);
                     }
                 }
 
-                if (event.events & EPOLL.OUT != -1) {
-                    const sent = std.os.linux.sendto(event.data.fd, "bye.zig", 7, MSG.NOSIGNAL, null, 0);
-
-                    _ = sent; // todo: properly flush
-                }
+                // if (event.events & EPOLL.OUT != -1) {
+                //     _ = std.os.linux.sendto(event.data.ptr.file_descriptor, event.data.ptr.to_send, length, MSG.NOSIGNAL, null, 0);
+                // }
             }
         }
     }

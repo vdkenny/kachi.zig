@@ -20,6 +20,27 @@ pub const Database = struct {
     }
 };
 
+const Type = enum {
+    // simple_string,
+    // simple_error,
+    // integer,
+    bulk_string,
+    // null_bulk_string,
+    // array,
+};
+const Query = struct {
+    command: []u8,
+    type: Type,
+
+    pub fn init(str: []const u8) !Query {
+        switch (str[0]) {
+            '$' => Type.bulk_string,
+        }
+
+        return .{};
+    }
+};
+
 fn hash(key: []const u8) u32 {
     var h: u32 = 0;
 
