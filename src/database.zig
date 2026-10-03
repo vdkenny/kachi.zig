@@ -24,20 +24,57 @@ const Type = enum {
     // simple_string,
     // simple_error,
     // integer,
-    bulk_string,
+    // bulk_string,
     // null_bulk_string,
-    // array,
+    array,
 };
-const Query = struct {
-    command: []u8,
+pub const Query = struct {
     type: Type,
+    commands: []Command,
 
-    pub fn init(str: []const u8) !Query {
-        switch (str[0]) {
-            '$' => Type.bulk_string,
+    pub fn parse(str: []const u8) !Query {
+        const query_type = switch (str[0]) {
+            '*' => Type.array,
+            else => return error.Protocol,
+        };
+
+        // const length = try std.fmt.parseInt(u32, str[..], 10);
+        //
+        // const commands = switch (query_type) {
+        //     Type.array => &Query.array(length),
+        // };
+
+        std.debug.print("{s} : {}\n", .{ @tagName(query_type), 0 });
+
+        return .{
+            .type = query_type,
+            .commands = &.{},
+        };
+    }
+
+    pub fn execute(self: *Query) !void {
+        for (self.commands) |command| {
+            command.execute();
         }
+    }
 
-        return .{};
+    fn array(length: u32) void {
+        _ = length;
+    }
+};
+
+const Command = struct {
+    type: enum {
+        get,
+        set,
+    },
+    args: []void,
+
+    pub fn parse(str: []const u8) !Command {
+        _ = str;
+    }
+    pub fn execute(self: *Command) void {
+        _ = self;
     }
 };
 

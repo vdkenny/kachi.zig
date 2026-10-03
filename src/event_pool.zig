@@ -13,6 +13,7 @@ pub const Client = struct {
 
     to_send: []u8,
     to_send_index: u32 = 0,
+    to_send_end: u32 = 0,
 
     to_read: []u8,
     to_read_index: u32 = 0,
@@ -125,6 +126,19 @@ pub const EventLoop = struct {
         }
 
         self.clients.append(&client.node);
+    }
+
+    pub fn mod(self: *EventLoop, client: *Client, events: u32) !void {
+        var ev: linux.epoll_event = .{
+            .events = events,
+            .data = .{ .ptr = @intFromPtr(client) },
+        };
+
+        if (errno(linux.epoll_ctl(self.file_descriptor, EPOLL.CTL_MOD, client.file_descriptor, &ev)) != .SUCCESS) {
+            _ = linux.close(client.file_descriptor);
+
+            return error.Mod;
+        }
     }
 
     pub fn dispatch(self: *EventLoop, client: *Client) void {

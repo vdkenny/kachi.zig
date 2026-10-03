@@ -5,6 +5,7 @@ const MSG = std.os.linux.MSG;
 const Client = @import("event_pool.zig").Client;
 const EventLoop = @import("event_pool.zig").EventLoop;
 const TcpListener = @import("event_pool.zig").TcpListener; // refactor: not the best design?
+const Query = @import("database.zig").Query;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -28,16 +29,35 @@ pub fn main(init: std.process.Init) !void {
                 try event_loop.add(new_client);
             } else {
                 if (event.events & EPOLL.IN != -1) {
-                    const bytes = std.os.linux.recvfrom(client.file_descriptor, client.to_read.ptr, client.to_read.len, 0, null, null);
+                    const bytes = std.os.linux.recvfrom(client.file_descriptor, client.to_read.ptr, client.to_read.len, 0, null, null); // fixme: read keep happening on EOF ; use to_read_index
 
-                    if (bytes == 0) {
-                        event_loop.dispatch(client);
+                    const errno = std.os.linux.errno(bytes);
+                    if (errno != .SUCCESS) {
+                        if (errno != .AGAIN) {
+                            event_loop.dispatch(client);
+                        } // todo: set client.to_read_index
+                    } else {
+                        _ = try Query.parse(client.to_read);
+                        try event_loop.mod(client, EPOLL.IN | EPOLL.OUT);
                     }
                 }
 
-                // if (event.events & EPOLL.OUT != -1) {
-                //     _ = std.os.linux.sendto(event.data.ptr.file_descriptor, event.data.ptr.to_send, length, MSG.NOSIGNAL, null, 0);
-                // }
+                if (event.events & EPOLL.OUT != -1) {
+                    const sent = std.os.linux.sendto(
+                        client.file_descriptor,
+                        client.to_send[client.to_send_index..client.to_send_end].ptr,
+                        client.to_send_end - client.to_send_index,
+                        MSG.NOSIGNAL,
+                        null,
+                        0,
+                    );
+
+                    if (std.os.linux.errno(sent) == .SUCCESS) {
+                        event_loop.dispatch(client);
+                    } else if (std.os.linux.errno(sent) == .AGAIN) {
+                        try event_loop.mod(client, EPOLL.IN | EPOLL.OUT);
+                    }
+                }
             }
         }
     }
