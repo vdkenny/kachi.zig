@@ -5,6 +5,7 @@ const MSG = std.os.linux.MSG;
 const Client = @import("event_pool.zig").Client;
 const EventLoop = @import("event_pool.zig").EventLoop;
 const TcpListener = @import("event_pool.zig").TcpListener; // refactor: not the best design?
+const Database = @import("database.zig").Database;
 const Query = @import("database.zig").Query;
 
 pub fn main(init: std.process.Init) !void {
@@ -14,6 +15,7 @@ pub fn main(init: std.process.Init) !void {
     defer event_loop.deinit();
 
     const server = try TcpListener.init();
+    const db: *Database = try .init(gpa);
 
     const _srv: *Client = try .init(server.file_descriptor, gpa);
     try event_loop.add(_srv); // refactor: ugly + unneceseary allocation of buffers, aka waste of 16KB?
@@ -29,16 +31,27 @@ pub fn main(init: std.process.Init) !void {
                 try event_loop.add(new_client);
             } else {
                 if (event.events & EPOLL.IN != -1) {
-                    const bytes = std.os.linux.recvfrom(client.file_descriptor, client.to_read.ptr, client.to_read.len, 0, null, null); // fixme: read keep happening on EOF ; use to_read_index
+                    const bytes = std.os.linux.recvfrom(client.file_descriptor, client.to_read.ptr, client.to_read.len, 0, null, null);
 
                     const errno = std.os.linux.errno(bytes);
                     if (errno != .SUCCESS) {
                         if (errno != .AGAIN) {
-                            event_loop.dispatch(client);
-                        } // todo: set client.to_read_index
+                            event_loop.dispatch(gpa, client);
+                        }
                     } else {
-                        _ = try Query.parse(client.to_read);
-                        try event_loop.mod(client, EPOLL.IN | EPOLL.OUT);
+                        const query = Query.parse(gpa, client.to_read, bytes) catch {
+                            event_loop.dispatch(gpa, client);
+                            continue;
+                        };
+                        defer query.deinit(gpa);
+
+                        const response = try query.commands[0].execute(gpa, db);
+
+                        if (response) |v| {
+                            client.to_send_end = v.len;
+                            client.to_send = v;
+                            try event_loop.mod(client, EPOLL.IN | EPOLL.OUT);
+                        }
                     }
                 }
 
@@ -53,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
                     );
 
                     if (std.os.linux.errno(sent) == .SUCCESS) {
-                        event_loop.dispatch(client);
+                        event_loop.dispatch(gpa, client);
                     } else if (std.os.linux.errno(sent) == .AGAIN) {
                         try event_loop.mod(client, EPOLL.IN | EPOLL.OUT);
                     }

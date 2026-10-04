@@ -13,7 +13,7 @@ pub const Client = struct {
 
     to_send: []u8,
     to_send_index: u32 = 0,
-    to_send_end: u32 = 0,
+    to_send_end: usize = 0,
 
     to_read: []u8,
     to_read_index: u32 = 0,
@@ -141,10 +141,11 @@ pub const EventLoop = struct {
         }
     }
 
-    pub fn dispatch(self: *EventLoop, client: *Client) void {
-        self.clients.remove(&client.node);
-
+    pub fn dispatch(self: *EventLoop, gpa: std.mem.Allocator, client: *Client) void {
         _ = linux.epoll_ctl(self.file_descriptor, EPOLL.CTL_DEL, client.file_descriptor, null); // < linux v2.6.9 requires non-null pointer
         _ = linux.close(client.file_descriptor);
+
+        self.clients.remove(&client.node);
+        client.deinit(gpa);
     }
 };
