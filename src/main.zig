@@ -5,8 +5,8 @@ const MSG = std.os.linux.MSG;
 const Client = @import("event_pool.zig").Client;
 const EventLoop = @import("event_pool.zig").EventLoop;
 const TcpListener = @import("event_pool.zig").TcpListener; // refactor: not the best design?
-const Database = @import("database.zig").Database;
-const Query = @import("database.zig").Query;
+const Query = @import("resp.zig").Query;
+const Protocol = @import("protocol.zig");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -14,8 +14,8 @@ pub fn main(init: std.process.Init) !void {
     var event_loop = try EventLoop.init();
     defer event_loop.deinit();
 
-    const server = try TcpListener.init();
-    const db: *Database = try .init(gpa);
+    const server = try TcpListener.init(6379);
+    var kv: std.StringHashMap([]const u8) = .init(gpa);
 
     const _srv: *Client = try .init(server.file_descriptor, gpa);
     try event_loop.add(_srv); // refactor: ugly + unneceseary allocation of buffers, aka waste of 16KB?
@@ -39,13 +39,14 @@ pub fn main(init: std.process.Init) !void {
                             event_loop.dispatch(gpa, client);
                         }
                     } else {
-                        const query = Query.parse(gpa, client.to_read, bytes) catch {
+                        const query = Query.parse(gpa, client.to_read, bytes) catch { // todo: deprecate
                             event_loop.dispatch(gpa, client);
                             continue;
                         };
                         defer query.deinit(gpa);
+                        // try Protocol.Deserialize.read(gpa, client.to_read);
 
-                        const response = try query.commands[0].execute(gpa, db);
+                        const response = try query.commands[0].execute(gpa, &kv);
 
                         if (response) |v| {
                             client.to_send_end = v.len;
@@ -66,7 +67,7 @@ pub fn main(init: std.process.Init) !void {
                     );
 
                     if (std.os.linux.errno(sent) == .SUCCESS) {
-                        event_loop.dispatch(gpa, client);
+                        // event_loop.dispatch(gpa, client);
                     } else if (std.os.linux.errno(sent) == .AGAIN) {
                         try event_loop.mod(client, EPOLL.IN | EPOLL.OUT);
                     }

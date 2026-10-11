@@ -43,7 +43,7 @@ pub const Client = struct {
 pub const TcpListener = struct {
     file_descriptor: linux.fd_t,
 
-    pub fn init() !TcpListener {
+    pub fn init(port: u16) !TcpListener {
         const socket = linux.socket(AF.INET, SOCK.STREAM, linux.IPPROTO.TCP);
         if (errno(socket) != .SUCCESS) {
             return error.Socket; // todo: name all error.*'s properly
@@ -53,8 +53,8 @@ pub const TcpListener = struct {
 
         const addr = linux.sockaddr.in{
             .family = linux.AF.INET,
-            .port = std.mem.nativeToBig(u16, 6379),
-            .addr = std.mem.nativeToBig(u32, 0),
+            .port = std.mem.nativeToBig(u16, port),
+            .addr = std.mem.bigToNative(u32, 0x7F000001),
         };
 
         if (errno(linux.bind(@intCast(socket), @ptrCast(&addr), @sizeOf(linux.sockaddr.in))) != .SUCCESS) {

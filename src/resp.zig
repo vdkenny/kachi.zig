@@ -1,47 +1,5 @@
 const std = @import("std");
 
-const KvEntry = struct {
-    key: []u8,
-    value: []u8,
-};
-
-pub const Database = struct {
-    items: []KvEntry,
-    used: usize,
-    capacity: usize,
-
-    pub fn init(gpa: std.mem.Allocator) !*Database {
-        const db = try gpa.create(Database);
-
-        db.* = .{
-            .items = try gpa.alloc(KvEntry, 10_000),
-            .used = 0,
-            .capacity = 10_000,
-        };
-
-        return db;
-    }
-
-    pub fn get(self: *Database, key: []const u8) ?[]u8 {
-        for (self.items[0..self.used]) |*entry| {
-            if (std.mem.eql(u8, key, entry.key)) {
-                return entry.value;
-            }
-        }
-
-        return null;
-    }
-
-    pub fn set(self: *Database, gpa: std.mem.Allocator, key: []const u8, value: []const u8) !void {
-        self.items[self.used] = .{
-            .key = try gpa.dupe(u8, key),
-            .value = try gpa.dupe(u8, value),
-        };
-
-        self.used += 1;
-    }
-};
-
 pub const Query = struct {
     commands: []Command, // todo: pipelining
 
@@ -53,6 +11,7 @@ pub const Query = struct {
         }
 
         const index = std.mem.indexOfScalar(u8, str, '\r') orelse return error.Protocol;
+        std.debug.print("=====request=====\n{} : {s}\n=======end======\n", .{ index, str[0..25] });
         const length = try std.fmt.parseInt(u32, str[1..index], 10);
 
         query.* = .{
@@ -98,25 +57,18 @@ const Command = struct {
         return cmd;
     }
 
-    pub fn execute(self: *const Command, gpa: std.mem.Allocator, db: *Database) !?[]u8 {
+    pub fn execute(self: *const Command, gpa: std.mem.Allocator, db: *std.StringHashMap([]const u8)) !?[]u8 {
         if (std.mem.eql(u8, self.args[0], "GET")) {
             if (db.get(self.args[1])) |v| {
-                return try gpa.dupe(u8, v);
+                return try gpa.print("${}\r\n{s}\r\n", .{ v.len, v });
             }
         } else if (std.mem.eql(u8, self.args[0], "SET")) {
-            try db.set(gpa, self.args[1], self.args[2]);
+            try db.put(self.args[1], self.args[2]);
+            return try gpa.dupe(u8, "+OK\r\n");
+        } else if (std.mem.eql(u8, self.args[0], "PING")) {
+            return try gpa.dupe(u8, "+PONG\r\n");
         }
 
         return null;
     }
 };
-
-fn hash(key: []const u8) u32 {
-    var h: u32 = 0;
-
-    for (key) |v| {
-        h = (h + v) * 19;
-    }
-
-    return h % 10_000;
-}
