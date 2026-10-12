@@ -44,7 +44,8 @@ pub fn main(init: std.process.Init) !void {
                             continue;
                         };
                         defer query.deinit(gpa);
-                        // try Protocol.Deserialize.read(gpa, client.to_read);
+                        var smth: Protocol.Deserialize = .init(client.to_read);
+                        _ = try smth.read(gpa);
 
                         const response = try query.commands[0].execute(gpa, &kv);
 
