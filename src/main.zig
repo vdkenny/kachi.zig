@@ -5,7 +5,6 @@ const MSG = std.os.linux.MSG;
 const Client = @import("event_pool.zig").Client;
 const EventLoop = @import("event_pool.zig").EventLoop;
 const TcpListener = @import("event_pool.zig").TcpListener; // refactor: not the best design?
-const Query = @import("resp.zig").Query;
 const Protocol = @import("protocol.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -39,21 +38,14 @@ pub fn main(init: std.process.Init) !void {
                             event_loop.dispatch(gpa, client);
                         }
                     } else {
-                        const query = Query.parse(gpa, client.to_read, bytes) catch { // todo: deprecate
-                            event_loop.dispatch(gpa, client);
-                            continue;
-                        };
-                        defer query.deinit(gpa);
-                        var smth: Protocol.Deserialize = .init(client.to_read);
+                        var smth: Protocol.Deserialize = .init(client.to_read); // todo: use new deserializer
                         _ = try smth.read(gpa);
 
-                        const response = try query.commands[0].execute(gpa, &kv);
-
-                        if (response) |v| {
-                            client.to_send_end = v.len;
-                            client.to_send = v;
-                            try event_loop.mod(client, EPOLL.IN | EPOLL.OUT);
-                        }
+                        //     if (response) |v| {
+                        //         client.to_send_end = v.len;
+                        //         client.to_send = v;
+                        //         try event_loop.mod(client, EPOLL.IN | EPOLL.OUT);
+                        //     }
                     }
                 }
 

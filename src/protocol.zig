@@ -72,27 +72,29 @@ pub const Deserialize = struct {
         const ulen: u64 = @intCast(len.integer);
         const str = self.buf[self.start..][0..ulen];
 
-        self.start += ulen + 2;
+        self.start += ulen + 2; // add 2 to skip CRLF
 
         return .{ .bulk_string = str };
     }
 
     fn integer(self: *Deserialize) DeserializeErrors!Value {
-        var end: usize = 0;
+        var end: usize = self.start;
 
-        for (self.buf[self.start..], self.start..) |_, i| {
-            if (i >= 2 and self.buf[i - 2] == '\r') {
-                end = i - 2;
+        while (end > self.buf.len - 1) {
+            if (end >= 2 and self.buf[end - 2] == '\r') {
+                end -= 2; // ew?
                 break;
             }
+
+            end += 1;
         }
 
-        if (end == 0) {
+        if (end == self.start) {
             return error.NoCRLF;
         }
 
         const int = try std.fmt.parseInt(i64, self.buf[self.start..end], 10);
-        self.start += end;
+        self.start = end + 2; // add 2 to skip CRLF
 
         return .{ .integer = int };
     }
