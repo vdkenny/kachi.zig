@@ -1,32 +1,85 @@
 const std = @import("std");
 
 const ValueTag = enum {
-    array,
-    bulk_string,
+    simple_string,
+    simple_error,
     integer,
+    bulk_string,
+    array,
+    null,
 };
 
-const ArrayValue = []Value;
-const BulkStringValue = []const u8;
+const SimpleStringValue = []const u8;
+const SimpleErrorValue = []const u8;
 const IntegerValue = i64;
+const BulkStringValue = []const u8;
+const ArrayValue = []const Value; // todo: refactor repeating values
 
-const Value = union(ValueTag) {
-    array: ArrayValue,
-    bulk_string: BulkStringValue,
+pub const Value = union(ValueTag) {
+    simple_string: SimpleStringValue,
+    simple_error: SimpleErrorValue,
     integer: IntegerValue,
+    bulk_string: BulkStringValue,
+    array: ArrayValue,
+    null: void, // todo: void?
 };
 
+const SerializeErrors = error{} || std.Io.Writer.Error;
 const DeserializeErrors = error{
     IncorrectFirstByte,
     NoCRLF,
+    NegativeLength,
 } || std.mem.Allocator.Error || std.fmt.ParseIntError;
 
-pub const Serialize = struct {};
+pub const Serialize = struct {
+    pub fn write(
+        value: Value,
+        writer: *std.Io.Writer,
+    ) SerializeErrors!void {
+        try switch (value) {
+            .array => |v| Serialize.array(v, writer),
+            .bulk_string => |v| Serialize.bulk_string(v, writer),
+            .integer => |v| Serialize.integer(v, writer),
+            .simple_string => |v| Serialize.simple_string(v, writer),
+            .simple_error => |v| Serialize.simple_error(v, writer),
+            .null => Serialize._null(writer),
+        };
+    }
+
+    fn array(value: ArrayValue, writer: *std.Io.Writer) SerializeErrors!void {
+        try writer.print("*{d}\r\n", .{value.len});
+
+        for (value) |v| {
+            try Serialize.write(v, writer);
+        }
+    }
+
+    fn bulk_string(value: BulkStringValue, writer: *std.Io.Writer) SerializeErrors!void {
+        try writer.print("${d}\r\n{s}\r\n", .{ value.len, value });
+    }
+
+    fn integer(value: IntegerValue, writer: *std.Io.Writer) SerializeErrors!void {
+        try writer.print(":{d}\r\n", .{value});
+    }
+
+    fn simple_string(value: SimpleStringValue, writer: *std.Io.Writer) SerializeErrors!void {
+        try writer.print("+{s}\r\n", .{value});
+    }
+
+    fn simple_error(value: SimpleErrorValue, writer: *std.Io.Writer) SerializeErrors!void {
+        try writer.print("-{s}\r\n", .{value});
+    }
+
+    fn _null(writer: *std.Io.Writer) SerializeErrors!void { // todo: do not shadow null?
+        try writer.print("_\r\n", .{});
+    }
+};
+
 pub const Deserialize = struct {
-    buf: []u8,
+    buf: []const u8,
     start: usize,
 
-    pub fn init(request: []u8) Deserialize {
+    pub fn init(request: []const u8) Deserialize {
         return .{
             .buf = request,
             .start = 0,
@@ -48,15 +101,14 @@ pub const Deserialize = struct {
         const len = try self.integer();
 
         if (len.integer <= 0) {
-            @panic("TODO: array length is >= 0, prepare response");
+            return error.NegativeLength; // todo: ignore instead of error? *2 $1 a *-1;
         }
 
         const ulen: u64 = @intCast(len.integer);
         const args = try gpa.alloc(Value, ulen);
 
         for (0..ulen) |i| {
-            const value = try self.read(gpa);
-            args[i] = value;
+            args[i] = try self.read(gpa);
         }
 
         return .{ .array = args };
@@ -65,8 +117,8 @@ pub const Deserialize = struct {
     fn bulk_string(self: *Deserialize) DeserializeErrors!Value {
         const len = try self.integer();
 
-        if (len.integer <= 0) {
-            @panic("TODO: bulk string length is less than 0, prepare empty string");
+        if (len.integer < 0) {
+            return error.NegativeLength;
         }
 
         const ulen: u64 = @intCast(len.integer);
@@ -80,7 +132,7 @@ pub const Deserialize = struct {
     fn integer(self: *Deserialize) DeserializeErrors!Value {
         var end: usize = self.start;
 
-        while (end > self.buf.len - 1) {
+        while (end < self.buf.len - 1) {
             if (end >= 2 and self.buf[end - 2] == '\r') {
                 end -= 2; // ew?
                 break;
