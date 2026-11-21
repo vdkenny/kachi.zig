@@ -37,10 +37,9 @@ pub fn command_from_value(value: Value) Error!Command {
     }
 }
 
-pub fn execute(kv: KV, writer: *std.Io.Writer, value: Value) void {
+pub fn execute(kv: *KV, writer: *std.Io.Writer, value: Value) void {
     const command = command_from_value(value) catch {
         Serialize.write(.{ .simple_error = "ERR unknown command" }, writer) catch {};
-
         return;
     };
 
@@ -52,7 +51,7 @@ pub fn execute(kv: KV, writer: *std.Io.Writer, value: Value) void {
 }
 
 // todo: is writing errors directly to client in handlers desirable?
-fn get(kv: KV, writer: *std.Io.Writer, value: Value) void {
+fn get(kv: *KV, writer: *std.Io.Writer, value: Value) void {
     const array = value.array;
 
     if (array.len < 2) {
@@ -70,12 +69,37 @@ fn get(kv: KV, writer: *std.Io.Writer, value: Value) void {
     }
 }
 
-fn set(kv: KV, writer: *std.Io.Writer, value: Value) void {
-    _ = .{ kv, writer, value };
-    @panic("TODO: handlers.set");
+fn set(kv: *KV, writer: *std.Io.Writer, value: Value) void {
+    const array = value.array;
+
+    if (array.len < 3) {
+        Serialize.write(.{ .simple_error = "ERR not enough arguments" }, writer) catch {};
+        return;
+    }
+
+    const key = array[1].bulk_string;
+    const value_unwrapped = array[2].bulk_string;
+
+    kv.put(key, value_unwrapped) catch {
+        Serialize.write(.{ .simple_error = "ERR server fault" }, writer) catch {};
+        return;
+    };
+
+    Serialize.write(.{ .simple_string = "OK" }, writer) catch {};
 }
 
 fn ping(writer: *std.Io.Writer, value: Value) void {
-    _ = .{ writer, value };
-    @panic("TODO: handlers.ping");
+    const array = value.array;
+
+    if (array.len > 2) {
+        Serialize.write(.{ .simple_error = "ERR too many arguments" }, writer) catch {};
+        return;
+    }
+
+    if (array.len == 2) { // todo: refactor
+        Serialize.write(.{ .bulk_string = array[1].bulk_string }, writer) catch {};
+        return;
+    }
+
+    Serialize.write(.{ .simple_string = "PONG" }, writer) catch {};
 }

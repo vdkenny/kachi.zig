@@ -99,7 +99,7 @@ pub fn process(self: *Server, allocator: std.mem.Allocator) void { // todo: allo
                             continue;
                         }; // todo: move deserializer errors to handlers-level?
 
-                        Handlers.execute(self.kv, &v.writer.writer, request);
+                        Handlers.execute(&self.kv, &v.writer.writer, request);
 
                         const reply = v.writer.written();
                         const sent = linux.sendto(v.file_descriptor, reply.ptr, reply.len, linux.MSG.NOSIGNAL, null, 0); // todo: decouple & handle partial reads & writes
